@@ -9,8 +9,9 @@ ifeq ($(TARGET_CPU_VARIANT),cortex-a510)
     DEX2OAT_TARGET_CPU_VARIANT_RUNTIME := cortex-a76
 endif
 
-ifeq ($(call is-board-platform-in-list,$(QCOM_BOARD_PLATFORMS)),true)
 # Include our Qualcomm Board configuration.
+ifeq ($(BOARD_USES_QCOM_HARDWARE),true)
+include hardware/qcom-caf/common/BoardConfigQcom.mk
 include device/qcom/common/BoardConfigQcom.mk
 endif
 
