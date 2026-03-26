@@ -30,6 +30,8 @@
 #   TARGET_KERNEL_CLANG_VERSION        = Clang prebuilts version, optional, defaults to clang-stable
 #   TARGET_KERNEL_CLANG_PATH           = Clang prebuilts path, optional
 #
+#   TARGET_KERNEL_LIBC_SYSROOT_USE     = libc sysroot to use, defaults to "host" for 6.11+
+#
 #   TARGET_KERNEL_LLVM_BINUTILS        = Use LLVM binutils, defaults to true
 #   TARGET_KERNEL_RUST_VERSION         = Rust prebuilts version, optional
 #   TARGET_KERNEL_NO_GCC               = Fully compile the kernel without GCC.
@@ -58,6 +60,8 @@
 #                                          is in PATH
 #   USE_CCACHE                         = Enable ccache (global Android flag)
 
+include vendor/lineage/build/core/utils.mk
+
 BUILD_TOP := $(abspath .)
 
 TARGET_AUTO_KDIR := $(shell echo $(TARGET_DEVICE_DIR) | sed -e 's/^device/kernel/g')
@@ -76,12 +80,15 @@ TARGET_KERNEL_VERSION ?= $(shell echo $(KERNEL_VERSION)"."$(KERNEL_PATCHLEVEL))
 
 # 5.10+ can fully compile without GCC by default
 ifneq ($(KERNEL_VERSION),)
-    ifeq ($(shell expr $(KERNEL_VERSION) \>= 6), 1)
+    ifeq ($(call is-version-greater-or-equal,$(TARGET_KERNEL_VERSION),5.10),true)
         TARGET_KERNEL_NO_GCC ?= true
-    else ifeq ($(shell expr $(KERNEL_VERSION) \>= 5), 1)
-        ifeq ($(shell expr $(KERNEL_PATCHLEVEL) \>= 10), 1)
-            TARGET_KERNEL_NO_GCC ?= true
-        endif
+    endif
+endif
+
+# 6.11+ can no longer use aosp glibc sysroot headers (too old)
+ifneq ($(KERNEL_VERSION),)
+    ifeq ($(call is-version-greater-or-equal,$(TARGET_KERNEL_VERSION),6.11),true)
+        TARGET_KERNEL_LIBC_SYSROOT_USE ?= host
     endif
 endif
 
@@ -93,11 +100,11 @@ ifneq ($(TARGET_KERNEL_CLANG_VERSION),)
     KERNEL_CLANG_VERSION := clang-$(TARGET_KERNEL_CLANG_VERSION)
 else
     # Use the default version of clang if TARGET_KERNEL_CLANG_VERSION hasn't been set by the device config
-    KERNEL_CLANG_VERSION := clang-r522817
+    KERNEL_CLANG_VERSION := $(LLVM_AOSP_PREBUILTS_VERSION)
 endif
 TARGET_KERNEL_CLANG_PATH ?= $(BUILD_TOP)/prebuilts/clang/host/$(HOST_PREBUILT_TAG)/$(KERNEL_CLANG_VERSION)
 
-TARGET_KERNEL_RUST_VERSION ?= 1.73.0c
+TARGET_KERNEL_RUST_VERSION ?= $(RUST_AOSP_PREBUILTS_VERSION)
 
 ifneq ($(USE_CCACHE),)
     ifneq ($(CCACHE_EXEC),)
@@ -125,7 +132,7 @@ ifneq ($(KERNEL_NO_GCC), true)
     KERNEL_TOOLCHAIN_PREFIX_arm := arm-linux-androidkernel-
     # x86 toolchain
     KERNEL_TOOLCHAIN_x86 := $(GCC_PREBUILTS)/x86/x86_64-linux-android-4.9/bin
-    KERNEL_TOOLCHAIN_PREFIX_x86 := x86_64-linux-android-
+    KERNEL_TOOLCHAIN_PREFIX_x86 := x86_64-linux-androidkernel-
 
     TARGET_KERNEL_CROSS_COMPILE_PREFIX := $(strip $(TARGET_KERNEL_CROSS_COMPILE_PREFIX))
     ifneq ($(TARGET_KERNEL_CROSS_COMPILE_PREFIX),)
@@ -144,6 +151,25 @@ ifneq ($(KERNEL_NO_GCC), true)
     # We need to add GCC toolchain to the path no matter what
     # for tools like `as`
     KERNEL_TOOLCHAIN_PATH_gcc := $(KERNEL_TOOLCHAIN_$(KERNEL_ARCH))
+
+    # Every GCC executables has a prefix, not automatically included if not cross compiling
+    ifeq ($(KERNEL_ARCH),x86)
+        KERNEL_MAKE_FLAGS += $(strip \
+                                AR=$(KERNEL_TOOLCHAIN_PREFIX)ar \
+                                NM=$(KERNEL_TOOLCHAIN_PREFIX)nm \
+                                OBJCOPY=$(KERNEL_TOOLCHAIN_PREFIX)objcopy \
+                                OBJDUMP=$(KERNEL_TOOLCHAIN_PREFIX)objdump \
+                                READELF=$(KERNEL_TOOLCHAIN_PREFIX)readelf \
+                                OBJSIZE=$(KERNEL_TOOLCHAIN_PREFIX)size \
+                                STRIP=$(KERNEL_TOOLCHAIN_PREFIX)strip \
+                                )
+        ifeq ($(TARGET_KERNEL_CLANG_COMPILE),false)
+            KERNEL_MAKE_FLAGS += $(strip \
+                                    CC=$(KERNEL_TOOLCHAIN_PREFIX)gcc \
+                                    LD=$(KERNEL_TOOLCHAIN_PREFIX)ld \
+                                    )
+        endif
+    endif
 
     ifneq ($(TARGET_KERNEL_CLANG_COMPILE),false)
         KERNEL_CROSS_COMPILE := CROSS_COMPILE="$(KERNEL_TOOLCHAIN_PATH)"
@@ -179,7 +205,9 @@ ifneq ($(KERNEL_NO_GCC), true)
     endif
 
     # Set the full path to the clang command and LLVM binutils
+    KERNEL_MAKE_FLAGS += HOSTAR=$(TARGET_KERNEL_CLANG_PATH)/bin/llvm-ar
     KERNEL_MAKE_FLAGS += HOSTCC=$(TARGET_KERNEL_CLANG_PATH)/bin/clang
+    KERNEL_MAKE_FLAGS += HOSTLD=$(TARGET_KERNEL_CLANG_PATH)/bin/ld.lld
     KERNEL_MAKE_FLAGS += HOSTCXX=$(TARGET_KERNEL_CLANG_PATH)/bin/clang++
     ifneq ($(TARGET_KERNEL_CLANG_COMPILE), false)
         ifneq ($(TARGET_KERNEL_LLVM_BINUTILS), false)
@@ -188,8 +216,14 @@ ifneq ($(KERNEL_NO_GCC), true)
         endif
     endif
 else
-    KERNEL_MAKE_FLAGS += HOSTCFLAGS="--sysroot=$(BUILD_TOP)/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/sysroot -I$(BUILD_TOP)/prebuilts/kernel-build-tools/linux-x86/include"
-    KERNEL_MAKE_FLAGS += HOSTLDFLAGS="--sysroot=$(BUILD_TOP)/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/sysroot -Wl,-rpath,$(BUILD_TOP)/prebuilts/kernel-build-tools/linux-x86/lib64 -L $(BUILD_TOP)/prebuilts/kernel-build-tools/linux-x86/lib64 -fuse-ld=lld --rtlib=compiler-rt"
+    ifeq ($(TARGET_KERNEL_LIBC_SYSROOT_USE), host)
+        KERNEL_HOST_C_LD_FLAGS_SYSROOT :=
+    else
+        KERNEL_HOST_C_LD_FLAGS_SYSROOT := --sysroot=$(BUILD_TOP)/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/sysroot
+    endif
+
+    KERNEL_MAKE_FLAGS += HOSTCFLAGS="$(KERNEL_HOST_C_LD_FLAGS_SYSROOT) -I$(BUILD_TOP)/prebuilts/kernel-build-tools/linux-x86/include"
+    KERNEL_MAKE_FLAGS += HOSTLDFLAGS="$(KERNEL_HOST_C_LD_FLAGS_SYSROOT) -Wl,-rpath,$(BUILD_TOP)/prebuilts/kernel-build-tools/linux-x86/lib64 -L $(BUILD_TOP)/prebuilts/kernel-build-tools/linux-x86/lib64 -fuse-ld=lld --rtlib=compiler-rt"
 
     TOOLS_PATH_OVERRIDE += PATH=$(BUILD_TOP)/prebuilts/tools-lineage/$(HOST_PREBUILT_TAG)/bin:$(TARGET_KERNEL_CLANG_PATH)/bin:$(BUILD_TOP)/prebuilts/rust/$(HOST_PREBUILT_TAG)/$(TARGET_KERNEL_RUST_VERSION)/bin:$(BUILD_TOP)/prebuilts/clang-tools/$(HOST_PREBUILT_TAG)/bin:$$PATH
 endif
@@ -230,6 +264,9 @@ TOOLS_PATH_OVERRIDE += BISON_PKGDATADIR=$(BUILD_TOP)/prebuilts/build-tools/commo
 # Since Linux 5.10, pahole is required
 KERNEL_MAKE_FLAGS += PAHOLE=$(BUILD_TOP)/prebuilts/kernel-build-tools/linux-x86/bin/pahole
 
+# Rust bindgen wants matching Clang and libclang versions
+KERNEL_MAKE_FLAGS += LIBCLANG_PATH=$(TARGET_KERNEL_CLANG_PATH)/lib
+
 # Set the out dir for the kernel's O= arg
 # This needs to be an absolute path, so only set this if the standard out dir isn't used
 OUT_DIR_PREFIX := $(shell echo $(OUT_DIR) | sed -e 's|/target/.*$$||g')
@@ -238,7 +275,6 @@ ifeq ($(OUT_DIR_PREFIX),out)
     KERNEL_BUILD_OUT_PREFIX := $(BUILD_TOP)/
 endif
 
-# Qualcomm kernel.
-ifeq ($(TARGET_PREBUILT_KERNEL),)
-TARGET_COMPILE_WITH_MSM_KERNEL := true
+ifneq ($(TARGET_KERNEL_PLATFORM_TARGET),)
+KERNEL_PATH := $(abspath $(BUILD_TOP)/../kernel-$(TARGET_KERNEL_VERSION))
 endif
