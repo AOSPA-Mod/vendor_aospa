@@ -112,10 +112,10 @@ PRODUCT_SYSTEM_DEFAULT_PROPERTIES += \
 endif
 
 # System overlays
-PRODUCT_ENFORCE_RRO_EXCLUDED_OVERLAYS += vendor/lineage/overlay/no-rro
+PRODUCT_ENFORCE_RRO_EXCLUDED_OVERLAYS += vendor/aospa/overlay/no-rro
 PRODUCT_PACKAGE_OVERLAYS += \
-    vendor/lineage/overlay/common \
-    vendor/lineage/overlay/no-rro
+    vendor/aospa/overlay/common \
+    vendor/aospa/overlay/no-rro
 
 PRODUCT_PACKAGES += \
     DocumentsUIOverlay \
